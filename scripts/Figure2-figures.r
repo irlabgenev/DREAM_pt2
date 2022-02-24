@@ -9,29 +9,29 @@ require(viridis)
 require(fields)
 require(ggrastr)
 require(ggstar)
+require(gtools)
+require(broom)
 
 # PATH (to be edited)
-current.path <- "..."
+current.path <- "N:/Novell/__articles in progress__/DREAM transcriptomic adaptations/"
 setwd(current.path)
 
 ### LAYOUT
-source(file.path(current.path, "common_layout.r"))
+source(file.path(current.path, "figures/R scripts/common_layout.r"))
 
 ### FUNCTIONS
-source(file.path(current.path, "Figure2-functions.r"))
+source(file.path(current.path, "figures/R scripts/Figure2-functions.r"))
 
 ### DATASETS
 file_names <- c(
-  "pairwise_distances.comp" = "datasets/RData_20210929-pairwise_distances.comp-centroids-min10cells-PC1-19.rds",
-  "or_data" = "datasets/RData_20211003-or_data.rds",
-  "osn_GEP.loading" = "datasets/RData_20210929-osn_GEP.loading.rds",
-  "mouse_or_phylo" = "datasets/Mus_musculus.GRCm38.olfrs.clustalo_full.trim.phyml.rooted.20210916.txt"
+  "pairwise_distances.comp" = "DREAM_datasets/RData_20220209-pairwise_distances.comp-centroids-min10cells-PC1-15.rds",
+  "or_data" = "DREAM_datasets/RData_20220209-or_data.rds",
+  "mouse_or_phylo" = "DREAM_datasets/Mus_musculus.GRCm38.olfrs.clustalo_full.trim.phyml.rooted.20210916.txt"
 )
 file_names <- sapply(file_names, function(x) file.path(current.path, x))
 
 pairwise_distances.comp <- read_rds(file_names["pairwise_distances.comp"])
 or_data <- read_rds(file_names["or_data"])
-osn_GEP.loading <- read_rds(file_names["osn_GEP.loading"])
 mouse_or_phylo <- ape::read.tree(file_names["mouse_or_phylo"])
 
 ### FIGURES
@@ -88,7 +88,7 @@ or.tree.p <- ggtree(mouse_or_phylo,
     legend.position = "none"
   )
   
-ggsave(filename = "figures/fig2-or_phylogeny.pdf",
+ggsave(filename = "figures/fig2-or_phylogeny_20220214.pdf",
        plot = or.tree.p,
        device = "pdf", 
        units = "cm",
@@ -162,7 +162,7 @@ pairwise_distances.comp.noconfound <- bind_rows(
   
   # distant & homologous
   filter(pairwise_distances.comp, 
-       !same_cluster,
+         !same_cluster | gene_cluster == "singleton",
        dist.aa.miyata.trimmed < dist.limits["dist.aa.miyata.trimmed"]) %>%
     mutate(cat = "D-H",
            genome = "distant",
@@ -179,7 +179,7 @@ pairwise_distances.comp.noconfound <- bind_rows(
   
   # distant & non-homologous
   filter(pairwise_distances.comp, 
-         !same_cluster,
+         !same_cluster | gene_cluster == "singleton",
          dist.aa.miyata.trimmed > dist.limits["dist.aa.miyata.trimmed"]) %>%
     mutate(cat = "D-N",
            genome = "distant",
@@ -196,8 +196,31 @@ pairwise_distances.comp.noconfound <- bind_rows(
 ) %>%
   mutate(cat = factor(cat, levels = c("C-H", "C-N", "D-H", "D-N")))
 
+pairwise_distances.comp.noconfound.stat <- select(pairwise_distances.comp.noconfound, cat) %>%
+  group_by(cat) %>%
+  summarise(n = n())
+pairwise_distances.comp.noconfound.tests <- select(pairwise_distances.comp.noconfound, cat, dist.trans) %>%
+  ungroup() %>%
+  mutate(CHvsCN = cat %in% c("C-H", "C-N"),
+         CHvsDH = cat %in% c("C-H", "D-H"),
+         DHvsDN = cat %in% c("D-H", "D-N")) %>%
+  pivot_longer(cols = c("CHvsCN", "CHvsDH", "DHvsDN"),
+               names_to = "comparison") %>%
+  filter(value) %>%
+  nest(data = c(cat, dist.trans)) %>%
+  mutate(wilcox.test = map(data, ~ tidy(wilcox.test(dist.trans ~ cat, data = .x))),
+         w = unlist(map(wilcox.test, ~ .x$statistic)),
+         p = unlist(map(wilcox.test, ~ .x$p.value)),
+         p.adj = p.adjust(p, method = "bonferroni"),
+         p.signif = stars.pval(p.adj)) %>%
+  select(-data, -wilcox.test)
+
+write_delim(x = pairwise_distances.comp.noconfound.tests,
+            file = "figures/Figure2G_stats_20220214.txt",
+            delim = "\t")
+
 p.close_distant <- ggplot(pairwise_distances.comp.noconfound, aes(x=cat, y=dist.trans)) +
-  geom_violin(color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4) +
+  geom_violin(color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, scale = "width") +
   stat_mean(geom="segment", mapping = aes(xend=..x.. - 0.5, yend=..y..), alpha = 0.5) +
   stat_mean(geom="segment", mapping = aes(xend=..x.. + 0.5, yend=..y..), alpha = 0.5) +
   stat_summary(fun = "median", geom = "point", alpha = 0.8) +
@@ -211,18 +234,7 @@ p.close_distant <- ggplot(pairwise_distances.comp.noconfound, aes(x=cat, y=dist.
   scale_y_continuous(limits = c(0, 38), expand = c(0,0), breaks = c(10, 20, 30)) +
   ylab("transcriptomic distance")
 
-p.binning.violin.aadiff <- ggplot(pairwise_distances.comp.bins, 
-                                  aes(x=bin.trans.10th, y=dist.aa.miyata.trimmed)) +
-  geom_violin(color = "grey80", fill = "grey80") +
-  stat_mean(geom="segment", mapping = aes(xend=..x.. - 0.5, yend=..y..), alpha = 0.5) +
-  stat_mean(geom="segment", mapping = aes(xend=..x.. + 0.5, yend=..y..), alpha = 0.5) +
-  stat_summary(fun = "median", geom = "point", alpha = 0.8) +
-  stat_compare_means(method = "anova", label.y = 400) +
-  scale_y_continuous(limits = c(0, 450), expand = c(0,0)) +
-  common_layout +
-  xlab("transcriptomic distance bin") +
-  ylab("amino acid differences")
-
+# 
 p.binning.prop <- ggplot(pairwise_distances.comp.transbins.stat, 
                          aes(x=bin.trans.10th)) +
   geom_col(aes(y=almost_ident.prop), fill = "#8D85BE", color = "#8D85BE", width = 0.4, position = position_nudge(-0.25)) +
@@ -230,7 +242,7 @@ p.binning.prop <- ggplot(pairwise_distances.comp.transbins.stat,
   geom_col(aes(y=nearby.prop), fill = "#66C2A4", color = "#66C2A4", width = 0.4, position = position_nudge(+0.25)) +
   stat_cor(aes(x=as.numeric(bin.trans.10th), y=nearby.prop), method = "spearman", label.y = 0.25, label.x = 4, color = "#66C2A4") +
   scale_x_discrete(limits = c(as.character(1:6), "7-10")) +
-  scale_y_continuous(limits = c(0, 0.32), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0, 0.33), expand = c(0,0)) +
   common_layout +
   xlab("transcriptomic distance bin") +
   ylab("proportion of pairs")
@@ -252,9 +264,10 @@ dist.genome.cuts <- levels(cut(pairwise_distances.comp.bins$dist.genome, breaks 
 
 dist.genome.cuts.4genes <- intergenic.dist.mean*4*2**c(0, seq_along(unique(as.numeric(pairwise_distances.comp.bins$bin.genome.4genes))))
 
+# binning and violin plots of transcriptomic distance vs genomic distance
 p.binning.genome <- ggplot(pairwise_distances.comp.bins, 
                        aes(x=bin.genome.10th, y=dist.trans)) +
-  geom_violin(aes(group=bin.genome.10th), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4) +
+  geom_violin(aes(group=bin.genome.10th), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, scale = "width") +
   stat_mean(geom="segment", mapping = aes(xend=..x.. - 0.5, yend=..y..), alpha = 0.5) +
   stat_mean(geom="segment", mapping = aes(xend=..x.. + 0.5, yend=..y..), alpha = 0.5) +
   stat_summary(fun = "median", geom = "point", alpha = 0.8) +
@@ -263,9 +276,28 @@ p.binning.genome <- ggplot(pairwise_distances.comp.bins,
   xlab("genomic distance (bin #)") +
   ylab("transcriptomic distance")
 
+# scatterplot of the same dataset
+p.scatterplot.genome <- ggplot(pairwise_distances.comp.bins, 
+                               aes(x=dist.genome, y=dist.trans)) +
+  rasterize(geom_point(alpha=0.3, size = 0.2, color="dodgerblue4", shape = 19), dpi = 600) +
+  stat_density_2d(geom = "polygon", contour = TRUE,
+                  aes(fill = after_stat(level)), colour = "black",
+                  bins = 10, alpha = 0.4, show.legend = F) +
+  #geom_vline(xintercept = dist.genome.cuts, linetype = "dashed") +
+  #geom_vline(xintercept = dist.genome.cuts.4genes[1:6], linetype = "dashed", color = "red") +
+  #stat_smooth(method = "lm", se = F) +
+  #stat_cor(method = "spearman") +
+  #stat_smooth(data = filter(pairwise_distances.comp.bins, as.numeric(bin.genome.10th) <= 3),
+  #            method = "lm", se = F, color = "red") +
+  scale_x_continuous(limits = c(0, 5.1e+6), expand = c(0,0)) +
+  common_layout +
+  xlab("genomic distance") +
+  ylab("transcriptomic distance")
+
+
 p.binning.genome.2 <- ggplot(pairwise_distances.comp.bins, 
                            aes(x=bin.genome.4genes, y=dist.trans)) +
-  geom_violin(aes(group=bin.genome.4genes), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4) +
+  geom_violin(aes(group=bin.genome.4genes), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, scale = "width") +
   stat_mean(geom="segment", mapping = aes(xend=..x.. - 0.5, yend=..y..), alpha = 0.5) +
   stat_mean(geom="segment", mapping = aes(xend=..x.. + 0.5, yend=..y..), alpha = 0.5) +
   stat_summary(fun = "median", geom = "point", alpha = 0.8) +
@@ -279,6 +311,9 @@ x <- filter(pairwise_distances.comp.bins, bin.genome.10th %in% c("1", "2", "3"))
 y <- filter(pairwise_distances.comp.bins, bin.genome.10th %in% c("1", "2", "3")) %>%
   pull(dist.genome)
 p.corr.genome <- cor.test(x, y, method = "spearman")
+y.aa <- filter(pairwise_distances.comp.bins, bin.genome.10th %in% c("1", "2", "3")) %>%
+  pull(dist.aa.miyata.trimmed)
+p.corr.genome.but.aa <- cor.test(x, y.aa, method = "spearman")
 length(x)
 
 x <- filter(pairwise_distances.comp.bins, bin.aa.10th %in% c("1", "2", "3")) %>%
@@ -286,18 +321,21 @@ x <- filter(pairwise_distances.comp.bins, bin.aa.10th %in% c("1", "2", "3")) %>%
 y <- filter(pairwise_distances.comp.bins, bin.aa.10th %in% c("1", "2", "3")) %>%
   pull(dist.aa.miyata.trimmed)
 p.corr.aa <- cor.test(x, y, method = "spearman")
+y.genome <- filter(pairwise_distances.comp.bins, bin.aa.10th %in% c("1", "2", "3")) %>%
+  pull(dist.genome)
+p.corr.aa.but.genome <- cor.test(x, y.genome, method = "spearman")
 length(x)
 
 x <- filter(pairwise_distances.comp.bins, bin.genome.4genes %in% c("1", "2", "3")) %>%
   pull(dist.trans)
 y <- filter(pairwise_distances.comp.bins, bin.genome.4genes %in% c("1", "2", "3")) %>%
-  pull(dist.aa.miyata.trimmed)
+  pull(dist.genome)
 p.corr.genome.4genes <- cor.test(x, y, method = "spearman")
 length(x)
 
 p.binning.aa <- ggplot(pairwise_distances.comp.bins, 
                        aes(x=as.character(bin.aa.10th), y=dist.trans)) +
-  geom_violin(aes(group=bin.aa.10th), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4) +
+  geom_violin(aes(group=bin.aa.10th), color = "dodgerblue1", fill = "dodgerblue1", alpha = 0.4, scale = "width") +
   stat_mean(geom="segment", mapping = aes(xend=..x.. - 0.5, yend=..y..), alpha = 0.5) +
   stat_mean(geom="segment", mapping = aes(xend=..x.. + 0.5, yend=..y..), alpha = 0.5) +
   stat_summary(fun = "median", geom = "point", alpha = 0.8) +
@@ -307,6 +345,24 @@ p.binning.aa <- ggplot(pairwise_distances.comp.bins,
   xlab("amino acid difference (bin #)") +
   ylab("transcriptomic distance")
 
+# scatterplot of the same dataset (--> supp)
+p.scatterplot.aadiff <- ggplot(pairwise_distances.comp.bins, 
+                               aes(x=dist.aa.miyata.trimmed, y=dist.trans)) +
+  rasterize(geom_point(alpha=0.3, size = 0.2, color="dodgerblue4", shape = 19), dpi = 600) +
+  stat_density_2d(geom = "polygon", contour = TRUE,
+                  aes(fill = after_stat(level)), colour = "black",
+                  bins = 10, alpha = 0.4, show.legend = F) +
+  #geom_vline(xintercept = dist.aa.cuts, linetype = "dashed") +
+  #stat_smooth(method = "lm", se = F) +
+  #stat_cor(method = "spearman") +
+  #stat_smooth(data = filter(pairwise_distances.comp.bins, as.numeric(bin.aa.10th) <= 3),
+  #            method = "lm", se = F, color = "red") +
+  scale_x_continuous(limits = c(0, 430), expand = c(0,0)) +
+  common_layout +
+  xlab("amino acid difference") +
+  ylab("transcriptomic distance")
+
+
 layout <- "
 AABB
 CCD#
@@ -314,7 +370,7 @@ CCD#
 
 p.binning <- wrap_plots(p.binning.genome, p.binning.prop, p.binning.aa, p.close_distant, design = layout)
 
-ggsave(filename = "figures/fig2_binning.pdf", 
+ggsave(filename = "figures/fig2efg_binning_20220214.pdf", 
        plot = p.binning,
        device = "pdf", 
        units = "cm",
@@ -379,16 +435,30 @@ GD
 "
 
 p.densities <- wrap_plots(p.density.trans,
-                          p.density.genome.1, p.binning.genome,
-                          p.density.genome.2, p.binning.genome.2,
-                          p.density.aa, p.binning.aa,
-                          design = layout)
+                          p.density.genome.1,
+                          p.density.genome.2, 
+                          p.binning.genome.2,
+                          p.density.aa,
+                          ncol = 1)
 
-ggsave(filename = "figures/fig2supp_densities.pdf", 
+
+p.scatterplots <- wrap_plots(p.scatterplot.aadiff, 
+                             p.scatterplot.genome,
+                             ncol = 1)
+
+ggsave(filename = "figures/figS4_densities_20220215.pdf", 
        plot = p.densities,
        device = "pdf", 
        units = "cm",
-       width = 15, 
+       width = 8, 
+       height = 20, 
+       useDingbats=FALSE)
+
+ggsave(filename = "figures/figS4_scatterplots_20220214.pdf", 
+       plot = p.scatterplots,
+       device = "pdf", 
+       units = "cm",
+       width = 11, 
        height = 15, 
        useDingbats=FALSE)
 
@@ -421,8 +491,8 @@ pairwise_distances.clusters <- left_join(pairwise_distances.clusters, select(or_
 
 # gradient genome
 d <- data.frame(
-  fill = c(min(pairwise_distances.comp.transbins$dist.genome),
-           max(pairwise_distances.comp.transbins$dist.genome)),
+  fill = c(min(pairwise_distances.comp$dist.genome, na.rm = T),
+           max(pairwise_distances.comp$dist.genome, na.rm = T)),
   x = c(1,1),
   y = c(1,2)
 )
@@ -499,7 +569,7 @@ p.matrices <- mapply(
 )
 
 for (i in 1:4) {
-  filename <- str_replace("figures/fig2-gene_cluster#_regulation.pdf",
+  filename <- str_replace("figures/fig2-gene_cluster#_regulation_20220214.pdf",
                           "#", as.character(i))
   ggsave(filename = filename,
          plot = p.matrices[[i]],
@@ -522,21 +592,21 @@ or.tree.nosn <- ggtree(mouse_or_phylo,
   or_data +
   
   # transcriptome cluster identity as colored tile
-  geom_fruit(
-    geom = geom_tile,
-    mapping = aes(fill=transcriptome_cluster),
-    width = 3,
-    offset = 0.1) +
-  scale_fill_manual(values = clusters.fill.osn, na.value = "white") +
+  #geom_fruit(
+  #  geom = geom_tile,
+  #  mapping = aes(fill=transcriptome_cluster),
+  #  width = 3,
+  #  offset = 0.1) +
+  #scale_fill_manual(values = clusters.fill.osn, na.value = "white") +
   
   # transcriptome cluster identity as colored tile
-  new_scale_fill() +
-  geom_fruit(
-    geom = geom_tile,
-    mapping = aes(fill=gene_cluster),
-    width = 3,
-    offset = 0.1) +
-  scale_fill_manual(values = gene_clusters.colors, na.value = "white") +
+  #new_scale_fill() +
+  #geom_fruit(
+  #  geom = geom_tile,
+  #  mapping = aes(fill=gene_cluster),
+  #  width = 3,
+  #  offset = 0.1) +
+  #scale_fill_manual(values = gene_clusters.colors, na.value = "white") +
   
   # number of OSN expressing a given OR
   geom_fruit(
@@ -556,11 +626,116 @@ or.tree.nosn <- ggtree(mouse_or_phylo,
   ) +
   layout_rectangular()
 
-ggsave(filename = "figures/fig1supp-phylo_osn_counts.pdf",
-       plot = ggplotify::as.ggplot(or.tree.nosn, angle=90, scale = 1.5) + coord_fixed(4),
+ggsave(filename = "figures/figs1d-phylo_osn_counts_20220214.pdf",
+       plot = or.tree.nosn,
        device = "pdf",
        units = "cm",
        width = 18,
        height = 18,
        useDingbats=FALSE)
 
+# R2 with PC usage
+dist_files <- list.files("DREAM_datasets/", pattern = "RData_20220209-pairwise_distances-simple-centroids-min10cells-PC1-")
+pc.num <- as.numeric(str_extract(dist_files, "[0-9]+(?=\\.rds)"))
+d.dist_files <- data.frame(
+  file.name = dist_files,
+  pc.num = pc.num
+) %>%
+  arrange(pc.num)
+
+rhos <- mapply(
+  file.name = paste("DREAM_datasets", d.dist_files$file.name, sep = "/"),
+  pc.num = d.dist_files$pc.num,
+  MoreArgs = list("metadata" = select(pairwise_distances.comp.bins, 
+                                      pair, dist.aa.miyata.trimmed, dist.genome,
+                                      bin.genome.10th, bin.genome.4genes, bin.aa.10th)),
+  SIMPLIFY = F,
+  FUN = function(file.name, pc.num, metadata) {
+    
+    d <- readRDS(file = file.name) %>%
+      inner_join(metadata, by = "pair")
+    
+    rho.genome.10th.all <- cor(
+      x = pull(d, dist.trans),
+      y = pull(d, dist.genome),
+      method = "spearman"
+    )
+    rho.genome.10th.3firstbins <- cor(
+      x = pull(d, dist.trans)[which(d$bin.genome.10th %in% as.character(1:3))],
+      y = pull(d, dist.genome)[which(d$bin.genome.10th %in% as.character(1:3))],
+      method = "spearman"
+    )
+    rho.genome.4genes.3firstbins <- cor(
+      x = pull(d, dist.trans)[which(d$bin.genome.4genes %in% as.character(1:3))],
+      y = pull(d, dist.genome)[which(d$bin.genome.4genes %in% as.character(1:3))],
+      method = "spearman"
+    )
+    rho.aa.all <- cor(
+      x = pull(d, dist.trans),
+      y = pull(d, dist.aa.miyata.trimmed),
+      method = "spearman"
+    )
+    rho.aa.3firstbins <- cor(
+      x = pull(d, dist.trans)[which(d$bin.aa.10th %in% as.character(1:3))],
+      y = pull(d, dist.aa.miyata.trimmed)[which(d$bin.aa.10th %in% as.character(1:3))],
+      method = "spearman"
+    )
+    
+    d.rho <- data.frame(
+      rho = c(rho.genome.10th.all, rho.genome.10th.3firstbins,
+              rho.genome.4genes.3firstbins, rho.aa.all, rho.aa.3firstbins),
+      distance.y = c("genome", "genome", "genome", "aa", "aa"),
+      dataset = c("all", "3 first bins", "3 first bins", "all", "3 first bins"),
+      binning = c("genome-10th", "genome-10th", "genome-4th", "aa-10th", "aa-10th"),
+      PC.num = rep(pc.num, 5)
+    )
+    
+    return(d.rho)
+    
+  }
+) %>%
+  do.call(what = rbind, args = .) %>%
+  remove_rownames()
+
+p.rhos <- ggplot(rhos, aes(x = PC.num, y = rho)) +
+  geom_point(aes(color = binning, shape = dataset)) +
+  scale_y_continuous(limits = c(0, 0.32)) +
+  scale_shape_manual(values = c("all" = 19, "3 first bins" = 17)) +
+  scale_x_continuous(breaks = 2:15, labels = paste("1", as.character(2:15), sep = "-")) +
+  xlab("PCs") +
+  common_layout
+
+ggsave(filename = "figures/fig2supp_rho_PCs_20220211.pdf", 
+       plot = p.rhos,
+       device = "pdf", 
+       units = "cm",
+       width = 10, 
+       height = 5, 
+       useDingbats=FALSE)
+
+# add Ns  
+d.1 <- group_by(pairwise_distances.comp.bins, first3 = bin.genome.10th %in% c("1", "2", "3")) %>%
+  summarise(n = n()) %>%
+  mutate(binning = "bin.genome.10th")
+d.2 <- group_by(pairwise_distances.comp.bins, first3 = bin.genome.4genes %in% c("1", "2", "3")) %>%
+  summarise(n = n()) %>%
+  mutate(binning = "bin.genome.4genes")
+d.3 <- group_by(pairwise_distances.comp.bins, first3 = bin.aa.10th %in% c("1", "2", "3")) %>%
+  summarise(n = n()) %>%
+  mutate(binning = "bin.aa.10th")
+d <- rbind(d.1, d.2, d.3)
+
+p.ns <- ggplot(d, aes(x=binning, y=n)) +
+  geom_col(aes(fill=first3), color = "black", width = 1, show.legend = F) +
+  scale_y_continuous(limits = c(0,3750), expand = c(0,0)) +
+  scale_x_discrete(expand = c(0,0)) +
+  ylab("num. of comp.") +
+  common_layout 
+
+ggsave(filename = "figures/fig2supp_comp_num_20220211.pdf", 
+plot = p.ns,
+device = "pdf", 
+units = "cm",
+width = 5, 
+height = 5, 
+useDingbats=FALSE)
